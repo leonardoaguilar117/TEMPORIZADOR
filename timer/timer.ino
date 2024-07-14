@@ -4,7 +4,7 @@
 
   REALIZADO POR: LEONARDO AGUILAR MARTÍNEZ
   PARA: REAL PROTECTION 
-  CON FECHA: 23/06/2024
+  CON FECHA: 07/07/2024
   GITHUB: https://github.com/leonardoaguilar117
 */
 
@@ -12,6 +12,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <RTClib.h>
+#include <EEPROM.h>
 
 /*OBJETOS USABLES*/
 RTC_DS3231 rtc;
@@ -22,7 +23,9 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 #define button3 2 /*INTRO*/
 #define button4 3 /*REGRESAR*/
 #define button5 5 /*MOSTRAR RELOJ*/
-#define relayAlarm 4 /*PIN PARA RELEVADOR*/
+#define relayAlarm 4 /*PIN PARA RELEVADOR ABRIR*/
+#define relayAlarmB 6 /*PIN PARA RELEVADOR CERRAR*/
+#define manualKey 7 /*ENCEDIDO POR LLAVE*/
 
 /*VARIABLES ADICIONALES*/
 bool startMenu = true;
@@ -48,7 +51,7 @@ struct Alarm {
 };
 
 /*7 ALARMAS DIFERENTES*/
-Alarm alarms[7];
+Alarm alarms[20];
 
 /*--------CONFIGURACION--------------*/
 void setup(){
@@ -59,21 +62,28 @@ void setup(){
   pinMode(button3, INPUT_PULLUP); /*INTRO*/
   pinMode(button4, INPUT_PULLUP); /*REGRESAR*/
   pinMode(button5, INPUT_PULLUP); /*MOSTRAR RELOJ*/
+  pinMode(manualKey, INPUT);
   pinMode(relayAlarm, OUTPUT); /*SALIDA PARA RELEVADOR*/
+  pinMode(relayAlarmB, OUTPUT); /*SALIDA PARA RELEVADOR */
 
+  /*APAGAR AMBOS RELÉS INICIALMENTE*/
+  digitalWrite(relayAlarm, HIGH);
+  digitalWrite(relayAlarmB, HIGH);
+  
   /*CONFIGURACION DEL MODULO RTC EN CASO DE SER LA PRIMERA VEZ DE USO*/
   if (!rtc.begin()) {
-    lcd.print("No RTC found");
+    lcd.print("ERROR CON RTC");
     while (1);
   }
 
   if (rtc.lostPower()) {
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    rtc.adjust(DateTime(2024, 07, 12, 10, 32, 00));
   }
 }
 
 /*--------REPETICION----------------*/
 void loop(){
+  
   if (startMenu){
     rpSolutions();
     startMenu = false;
@@ -84,7 +94,31 @@ void loop(){
   if (digitalRead(button5) == LOW) {
     showCurrentTime();
   }
+
+  //ENCENDIDO MANUAL 
+  if(digitalRead(button5) == LOW && digitalRead(button3) == LOW){
+    lcd.clear();
+    lcd.setCursor(4, 1);
+    lcd.print("ABRIENDO");
+    digitalWrite(relayAlarm, HIGH);
+    digitalWrite(relayAlarmB, LOW);
+    delay(1000);
+  }
+
+  //APAGADO MANUAL
+  if(digitalRead(button5) == LOW && digitalRead(button4) == LOW){
+    lcd.clear();
+    lcd.setCursor(4, 1);
+    lcd.print("CERRANDO");
+    digitalWrite(relayAlarm, LOW);
+    digitalWrite(relayAlarmB, HIGH);
+    delay(1000);
+  }
+
+  
 }
+
+ 
 
 /*---------MOSTRAR REAL PROTECTION---------------*/
 void rpSolutions(){
@@ -193,7 +227,7 @@ void howManyAlarms(){
 
     /*CONTADORES PARA CANTIDAD DE ALARMAS */
     if (digitalRead(button1) == LOW) {
-      if (count < 7) {
+      if (count < 19) {
        count++;
       }
       delay(80); 
@@ -230,6 +264,7 @@ void howManyAlarms(){
 
 /*FUNCION PARA AÑADIR ALARMAS A ARRAY DE ALARMS*/
 void addAlarm(int numberOfAlarms){
+  int direccion = 0;
   for(int i=0; i<numberOfAlarms; i++){
 
     /*ASIGNACIÓN DE VALORES PARA CADA ALARMA (BUCLE PASA POR TODAS 
@@ -240,7 +275,10 @@ void addAlarm(int numberOfAlarms){
     alarms[i].startMinute = auxMinute;
     alarms[i].endHour = auxEndHour;
     alarms[i].endMinute = auxEndMinute;
-  
+
+    EEPROM.put(direccion, alarms[i]);
+    direccion += sizeof(Alarm);
+
     lcd.clear();
     lcd.setCursor(1,0);
     lcd.println("Alarma agregada a");
@@ -256,7 +294,7 @@ void addAlarm(int numberOfAlarms){
   lcd.print("Todas las alarmas");
   lcd.setCursor(2,2);
   lcd.print("han sido agregadas");
-  delay(2000); // TIEMPO PARA MOSTRAR EL MENSAJE FINAL
+  delay(2000); 
   return;
 }
 
@@ -299,6 +337,7 @@ void assignHour(){
   }
 }
 
+/*FUNCION PARA AGREGAR EL TIEMPO PARA TERMINAR EL TEMPORIZADOR*/
 void assignEnd() {
   exitAssignEnd = false;
   while (true) {
@@ -381,12 +420,8 @@ void reset(){
       delay(900);
 
       // LIMPIAR TODAS LAS ALARMAS
-      for (int i = 0; i < 7; i++) {
-        alarms[i].activeDay = -1; // DESACTIVAR DÍA
-        alarms[i].startHour = -1; // HORA DE INICIO INDEFINIDA
-        alarms[i].startMinute = -1; // MINUTO DE INICIO INDEFINIDO
-        alarms[i].endHour = -1; // HORA DE FIN INDEFINIDA
-        alarms[i].endMinute = -1; // MINUTO DE FIN INDEFINIDO
+      for (int i = 0; i < EEPROM.length() ; i++) {
+        EEPROM.write(i, 0);
       }
       return;
     }
@@ -396,16 +431,22 @@ void reset(){
 }
 
 void activateAlarm(){
+  int direccion = 0;
     DateTime now = rtc.now();
 
     int currentDay = now.dayOfTheWeek(); // OBTENER EL DÍA ACTUAL (0-6)
     int currentHour = now.hour();        // OBTENER LA HORA ACTUAL
     int currentMinute = now.minute();    // OBTENER EL MINUTO ACTUAL
 
+    /*ITERA POR TODAS LAS ALARMAS Y COMPRUEBA SI HAY UNA ALARMA A ESTA HORA, ACTIVA
+      DE LO CONTRARIO APAGA*/
     for (int i = 0; i < 7; i++) {
+      EEPROM.get(direccion, alarms[i]);
+      direccion += sizeof(Alarm);
         if (alarms[i].activeDay == currentDay) {
             if (currentHour == alarms[i].startHour && currentMinute == alarms[i].startMinute) {
                 digitalWrite(relayAlarm, HIGH);
+                digitalWrite(relayAlarmB, LOW);
                 lcd.clear();
                 lcd.setCursor(3, 1);
                 lcd.print("ALARMA ACTIVA");
@@ -413,10 +454,11 @@ void activateAlarm(){
             }
             if (currentHour == alarms[i].endHour && currentMinute == alarms[i].endMinute) {
               digitalWrite(relayAlarm, LOW);
+              digitalWrite(relayAlarmB, HIGH);
               lcd.clear();
             }
         }
-    }  
+    }
 }
 
 /* FUNCION PARA MOSTRAR LA HORA ACTUAL */
@@ -433,11 +475,5 @@ void showCurrentTime() {
   lcd.print(now.minute() < 10 ? "0" : "");
   lcd.print(now.minute());
   
-  delay(2000); // TIEMPO PARA MOSTRAR LA HORA ACTUAL
+  delay(2000); 
 }
-
-
-
-
-
-
